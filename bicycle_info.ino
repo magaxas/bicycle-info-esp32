@@ -5,9 +5,14 @@
 #include <Wire.h>
 
 BLEServer *server = nullptr;
+unsigned long timerDelay = 500, lastTimer = 0;
 
-unsigned long lastTime = 0;
-unsigned long timerDelay = 1000;
+#define BUFFER_SAMPLES 3
+float speedBuffer[BUFFER_SAMPLES] = {0.f};
+uint8_t bufferIndex = 0;
+
+unsigned long currTime = 0, lastTime = 0;
+bool last = false;
 
 #define HALL_SENSOR_PIN 13
 uint32_t revolutions = 0, lastRevolutions = 0;
@@ -68,11 +73,17 @@ void initBLEServer() {
 
 void IRAM_ATTR onRevolution() {
 	revolutions++;
+
+  if (last) lastTime = millis();
+  else currTime = millis();
+
+  last = !last;
 }
 
 void setup() {
   Serial.begin(115200);
 
+  //Bluetooth Low Energy server init 
   initBLEServer();
 
   // Hall Effect sensor interrupt
@@ -82,14 +93,28 @@ void setup() {
 
 void loop() {
   if (deviceConnected) {
-    if ((millis() - lastTime) > timerDelay) {
+    if ((millis() - lastTimer) > timerDelay) {
       // UnitSpeed
+      unsigned long timeDiff = currTime > lastTime ? currTime - lastTime : lastTime - currTime;
+      float unitSpeed = 0;
+
+      if (timeDiff != 0 && lastRevolutions != revolutions) {
+        unitSpeed = PI / (timeDiff / 1000.f);
+      }
+
+      speedBuffer[bufferIndex++] = unitSpeed;
+      if (bufferIndex > BUFFER_SAMPLES) bufferIndex = 0; 
+
+      for (int i = 0; i < BUFFER_SAMPLES; i++) {
+        unitSpeed += speedBuffer[i];
+      }
+      unitSpeed /= BUFFER_SAMPLES;
+      
       // uint32_t max value is 4_294_967_295.0000
       // so we have 10 + 1 (decimal) + 4 = 15 positions
       static char unitSpeedData[20];
-      float unitSpeed = (revolutions - lastRevolutions) * PI / (timerDelay / 1000);
       dtostrf(unitSpeed, -1, 4, unitSpeedData);
-
+      
       unitSpeedCharacteristic.setValue(unitSpeedData);
       unitSpeedCharacteristic.notify();
       
@@ -99,15 +124,15 @@ void loop() {
 
       revolutionsCharacteristic.setValue(revolutionsData);
       revolutionsCharacteristic.notify();
-      
-      Serial.print("unitSpeed: ");
-      Serial.println(unitSpeed);
+
+      Serial.print("unitSpeed (km/h): ");
+      Serial.println(unitSpeed*3.6);
 
       Serial.print("revolutions: ");
       Serial.println(revolutions);
 
       lastRevolutions = revolutions;
-      lastTime = millis();
+      lastTimer = millis();
     }
   }
   
